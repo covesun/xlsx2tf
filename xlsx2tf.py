@@ -4,6 +4,13 @@ import openpyxl
 import hcl2
 from pathlib import Path
 
+RESOURCE_TYPE_MAP = {
+    "仮想ネットワーク": "azurerm_virtual_network",
+    "NATゲートウェイ": "azurerm_nat_gateway",
+    "パブリックIP": "azurerm_public_ip"
+    # ... 必要に応じて追加 ...
+}
+
 # ===== flatten_split_keys =====
 def flatten_split_keys(value, parent_key=""):
     """
@@ -217,15 +224,63 @@ def read_excel_concatkey_to_dict(input_excel, concat_key_header="連結キー", 
                 params[concat_key] = value
     return params
 
+def normalize_sheet_name(sheet_name):
+    """
+    シート名先頭の「数字. 」を除去し、マッピング用に日本語名だけ返す。
+    例：'01. サブネット' → 'サブネット'
+    """
+    return re.sub(r"^\d+\.\s*", "", sheet_name)
+
 # ===== export_excel_to_hcl =====
-def export_excel_to_hcl(input_excel, output_hcl):
+def export_excel_to_hcl(input_excel, output_hcl, concat_key_header="連結キー", value_header="設定値"):
     """
-    Excelパラシートから連結キー＆値をdict化して、HCLファイルとして書き出す。
+    Excelパラシートから、シート名（先頭数字除去＋日本語）→リソースタイプ変換、
+    name属性の値→リソース名、連結キー・値で属性dict生成し、HCL出力
+
+    見出しワード（列名）は引数で指定可能
     """
-    params = read_excel_concatkey_to_dict(input_excel)
+    wb = openpyxl.load_workbook(input_excel, data_only=True)
     data = {}
-    for k, v in params.items():
-        set_nested_dict_from_concat_key(data, k.split("."), v)
+
+    for ws in wb.worksheets:
+        sheet_name_raw = ws.title
+        sheet_name = normalize_sheet_name(sheet_name_raw)
+        resource_type = RESOURCE_TYPE_MAP.get(sheet_name)
+        if not resource_type:
+            print(f"シート名「{sheet_name_raw}」のマッピングが未定義。スキップ。")
+            continue
+
+        # ヘッダー行特定：引数で渡された見出しワードで列判定
+        header_row_idx, key_col, val_col = None, None, None
+        for idx, row in enumerate(ws.iter_rows(values_only=True), 1):
+            if concat_key_header in row and value_header in row:
+                key_col = row.index(concat_key_header)
+                val_col = row.index(value_header)
+                header_row_idx = idx
+                break
+        if header_row_idx is None:
+            print(f"シート「{sheet_name_raw}」で見出し行が見つからずスキップ。")
+            continue
+
+        resource_objs = {}
+        for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
+            if not row or row[key_col] is None:
+                continue
+            concat_key = str(row[key_col]).strip()
+            value = row[val_col]
+            if concat_key == "name":
+                res_name = str(value).strip()
+                if res_name not in resource_objs:
+                    resource_objs[res_name] = {}
+                resource_objs[res_name]["name"] = res_name
+                current_res_name = res_name
+            else:
+                if 'current_res_name' not in locals():
+                    continue
+                set_nested_dict_from_concat_key(resource_objs[current_res_name], concat_key.split("."), value)
+        if resource_objs:
+            data.setdefault(resource_type, {}).update(resource_objs)
+
     hcl = dict_to_resource_hcl(data)
     with open(output_hcl, "w", encoding="utf-8") as f:
         f.write(hcl)
@@ -269,7 +324,7 @@ def reflect_tf_to_excel(tf_path, input_excel, output_excel):
             if key in terraform_data:
                 row[val_col].value = terraform_data[key]
     wb.save(output_excel)
-    print(f"Excel反映完了：{output_excel}")
+    print(f"Excel反映完了：{output_excel}") 
 
 # ===== usage =====
 def usage():
