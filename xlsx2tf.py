@@ -102,7 +102,8 @@ def set_nested_dict_from_concat_key(data, keys, value):
 def format_hcl_value(name, val, indent, eqpad="", is_map=False):
     """
     HCLの値をインデント付きのHCL文形式に整形して返す。
-    - 文字列、数値、bool、null、式（${...}）などに対応
+    - 文字列、数値、bool、null、式（${...}）、list などに対応
+    - eqpadで「=」の位置を揃える
     """
     ind = '  ' * indent
     eqpad = eqpad or ''
@@ -117,13 +118,19 @@ def format_hcl_value(name, val, indent, eqpad="", is_map=False):
         return f"{ind}{name}{eqpad} = {'true' if val else 'false'}\n"
     elif val is None:
         return f"{ind}{name}{eqpad} = null\n"
+    elif isinstance(val, list):
+        arr = ', '.join([f"\"{x}\"" if isinstance(x, str) else str(x) for x in val])
+        return f"{ind}{name}{eqpad} = [{arr}]\n"
     else:
         return f"{ind}{name}{eqpad} = {val}\n"
 
 # ===== dict_to_hcl_block =====
 def dict_to_hcl_block(name, val, indent=0):
     """
-    ネストdict/listをHCLブロックとして再帰的に出力（module, map, 配列, blockすべて対応）
+    ネストdict/listをHCLブロックとして再帰的に出力
+    - list of dict → block_name { ... } block_name { ... }
+    - list of primitive → key = [ ... ]
+    - dict/mapもlistも「=」の位置を全部揃える
     """
     ind = '  ' * indent
     if isinstance(val, dict):
@@ -142,7 +149,7 @@ def dict_to_hcl_block(name, val, indent=0):
         kvs = []
         blocks = []
         for k, v in val.items():
-            if isinstance(v, dict) or isinstance(v, list):
+            if isinstance(v, dict) or (isinstance(v, list) and any(isinstance(i, dict) for i in v)):
                 blocks.append((k, v))
             else:
                 kvs.append((k, v))
@@ -156,15 +163,16 @@ def dict_to_hcl_block(name, val, indent=0):
         hcl += f"{ind}}}\n"
         return hcl
     elif isinstance(val, list):
-        # listがプリミティブなら配列、dictならblock
-        if all(isinstance(i, str) for i in val):
-            arr = ', '.join([f"\"{x}\"" for x in val])
-            return f"{ind}{name} = [{arr}]\n"
-        else:
+        # list of dict: block反復
+        if all(isinstance(i, dict) for i in val):
             blocks = ""
             for v in val:
                 blocks += dict_to_hcl_block(name, v, indent)
             return blocks
+        # list of primitive: 1行配列
+        else:
+            arr = ', '.join([f"\"{x}\"" if isinstance(x, str) else str(x) for x in val])
+            return f"{ind}{name} = [{arr}]\n"
     else:
         return format_hcl_value(name, val, indent)
 
@@ -237,7 +245,9 @@ def export_excel_to_hcl(input_excel, output_hcl, concat_key_header="連結キー
     Excelパラシートから、シート名（先頭数字除去＋日本語）→リソースタイプ変換、
     name属性の値→リソース名、連結キー・値で属性dict生成し、HCL出力
 
-    見出しワード（列名）は引数で指定可能
+    - name属性より前の全属性は一時バッファし、nameで流し込む
+    - name以降はcurrent_res_name配下に突っ込む
+    - 2つ以上のリソースもOK
     """
     wb = openpyxl.load_workbook(input_excel, data_only=True)
     data = {}
@@ -263,6 +273,9 @@ def export_excel_to_hcl(input_excel, output_hcl, concat_key_header="連結キー
             continue
 
         resource_objs = {}
+        pre_name_attrs = []      # name属性が出るまでの属性を一時保存
+        current_res_name = None
+
         for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
             if not row or row[key_col] is None:
                 continue
@@ -274,10 +287,16 @@ def export_excel_to_hcl(input_excel, output_hcl, concat_key_header="連結キー
                     resource_objs[res_name] = {}
                 resource_objs[res_name]["name"] = res_name
                 current_res_name = res_name
+                # name属性より前の属性をここで一気に流し込む
+                for k, v in pre_name_attrs:
+                    set_nested_dict_from_concat_key(resource_objs[current_res_name], k.split("."), v)
+                pre_name_attrs = []
             else:
-                if 'current_res_name' not in locals():
+                if current_res_name is None:
+                    pre_name_attrs.append((concat_key, value))  # name属性より前は一時保存
                     continue
                 set_nested_dict_from_concat_key(resource_objs[current_res_name], concat_key.split("."), value)
+
         if resource_objs:
             data.setdefault(resource_type, {}).update(resource_objs)
 
