@@ -179,27 +179,33 @@ def dict_to_hcl_block(name, val, indent=0):
 # ===== dict_to_resource_hcl =====
 def dict_to_resource_hcl(d):
     """
-    最上位dict（リソースタイプ別dict）をHCLファイル形式のテキストに変換する。
+    リソースタイプ・リソース名でHCLを生成。
+    - 直下の属性はdict/map/listを問わず全keyでeqpad計算してパディングする
     """
     hcl = ""
     for res_type, res_objs in d.items():
         for res_name, content in res_objs.items():
             hcl += f'resource "{res_type}" "{res_name}" {{\n'
-            kvs = []
-            blocks = []
-            for k, v in content.items():
-                if isinstance(v, dict) or isinstance(v, list):
-                    blocks.append((k, v))
-                else:
-                    kvs.append((k, v))
-            maxlen = max((len(k) for k, _ in kvs), default=0)
-            for k, v in kvs:
+
+            # === resource直下keyのmaxlenを一回求めておく ===
+            keys = list(content.keys())
+            maxlen = max((len(k) for k in keys), default=0)
+            # === key/valueを順次出力（block以外はすべてここ）===
+            for k in keys:
+                v = content[k]
                 eqpad = ' ' * (maxlen - len(k))
+                # dict, list of dictはblock反復であとから処理
+                if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
+                    continue
                 hcl += format_hcl_value(k, v, 1, eqpad)
-            for k, v in blocks:
-                hcl += dict_to_hcl_block(k, v, 1)
+            # === block（dict, list of dictのみ）を出力 ===
+            for k in keys:
+                v = content[k]
+                if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
+                    hcl += dict_to_hcl_block(k, v, 1)
             hcl += '}\n\n'
     return hcl
+
 
 # ===== find_header_row =====
 def find_header_row(ws, concat_key_header="連結キー", value_header="設定値"):
