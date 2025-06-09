@@ -100,15 +100,11 @@ def set_nested_dict_from_concat_key(data, keys, value):
 
 # ===== format_hcl_value =====
 def format_hcl_value(name, val, indent, eqpad="", is_map=False):
-    """
-    HCL値のフォーマット（式・文字列・bool等全部対応）。
-    - ${...}パターンや {$...} も素で出す（""なし）
-    - それ以外は自動でクオート
-    """
     ind = '  ' * indent
     eqpad = eqpad or ''
+    if val is None or val == "" or (isinstance(val, list) and len(val) == 0):
+        return ""
     if isinstance(val, str):
-        # ${...}もしくは{$...}両方対応
         m = re.fullmatch(r"(\$\{|\{\$)([^}]+)\}", val)
         if m:
             expr = m.group(2)
@@ -117,19 +113,35 @@ def format_hcl_value(name, val, indent, eqpad="", is_map=False):
             return f"{ind}{name}{eqpad} = \"{val}\"\n"
     elif isinstance(val, bool):
         return f"{ind}{name}{eqpad} = {'true' if val else 'false'}\n"
-    elif val is None:
-        return f"{ind}{name}{eqpad} = null\n"
+    elif isinstance(val, int):
+        return f"{ind}{name}{eqpad} = {val}\n"
+    elif isinstance(val, float):
+        # 小数点以下が0なら整数化して出す、それ以外はそのまま
+        if val.is_integer():
+            return f"{ind}{name}{eqpad} = {int(val)}\n"
+        else:
+            return f"{ind}{name}{eqpad} = {val}\n"
     elif isinstance(val, list):
         arr = []
         for x in val:
+            if x is None or x == "":
+                continue
             if isinstance(x, str):
                 m = re.fullmatch(r"(\$\{|\{\$)([^}]+)\}", x)
                 if m:
                     arr.append(m.group(2))
                 else:
                     arr.append(f"\"{x}\"")
+            elif isinstance(x, bool):
+                arr.append("true" if x else "false")
+            elif isinstance(x, int):
+                arr.append(str(x))
+            elif isinstance(x, float):
+                arr.append(str(int(x)) if x.is_integer() else str(x))
             else:
                 arr.append(str(x))
+        if not arr:
+            return f"{ind}{name}{eqpad} = []\n"
         return f"{ind}{name}{eqpad} = [{', '.join(arr)}]\n"
     else:
         return f"{ind}{name}{eqpad} = {val}\n"
@@ -137,14 +149,11 @@ def format_hcl_value(name, val, indent, eqpad="", is_map=False):
 # ===== dict_to_hcl_block =====
 def dict_to_hcl_block(name, val, indent=0):
     """
-    ネストdict/listをHCLブロックとして再帰的に出力
-    - list of dict → block_name { ... } block_name { ... }
-    - list of primitive → key = [ ... ]
-    - dict/mapもlistも「=」の位置を全部揃える
+    ネストdict/listをHCLブロックとして再帰的に出力。
+    - 空値/None属性は出力しない。
     """
     ind = '  ' * indent
     if isinstance(val, dict):
-        # 完全なmap（ネストなし）は "name = { ... }" 形式
         if all(not isinstance(v, (dict, list)) for v in val.values()):
             keys = list(val.keys())
             maxlen = max(len(k) for k in keys) if keys else 0
@@ -152,14 +161,15 @@ def dict_to_hcl_block(name, val, indent=0):
             for k in keys:
                 v = val[k]
                 eqpad = ' ' * (maxlen - len(k))
-                hcl += format_hcl_value(k, v, indent+1, eqpad, is_map=True)
+                out = format_hcl_value(k, v, indent+1, eqpad, is_map=True)
+                if out:
+                    hcl += out
             hcl += f"{ind}}}\n"
             return hcl
-        # 通常ブロック（ネストあり）
         kvs = []
         blocks = []
         for k, v in val.items():
-            if isinstance(v, dict) or (isinstance(v, list) and any(isinstance(i, dict) for i in v)):
+            if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
                 blocks.append((k, v))
             else:
                 kvs.append((k, v))
@@ -167,7 +177,9 @@ def dict_to_hcl_block(name, val, indent=0):
         hcl = f"{ind}{name} {{\n"
         for k, v in kvs:
             eqpad = ' ' * (maxlen - len(k))
-            hcl += format_hcl_value(k, v, indent+1, eqpad)
+            out = format_hcl_value(k, v, indent+1, eqpad)
+            if out:
+                hcl += out
         for k, v in blocks:
             hcl += dict_to_hcl_block(k, v, indent+1)
         hcl += f"{ind}}}\n"
@@ -179,10 +191,25 @@ def dict_to_hcl_block(name, val, indent=0):
             for v in val:
                 blocks += dict_to_hcl_block(name, v, indent)
             return blocks
-        # list of primitive: 1行配列
+        # list of primitive: 空リストは [] のみ
+        elif len(val) == 0:
+            return f"{ind}{name} = []\n"
         else:
-            arr = ', '.join([f"\"{x}\"" if isinstance(x, str) else str(x) for x in val])
-            return f"{ind}{name} = [{arr}]\n"
+            arr = []
+            for x in val:
+                if x is None or x == "":
+                    continue
+                if isinstance(x, str):
+                    m = re.fullmatch(r"(\$\{|\{\$)([^}]+)\}", x)
+                    if m:
+                        arr.append(m.group(2))
+                    else:
+                        arr.append(f"\"{x}\"")
+                else:
+                    arr.append(str(x))
+            if not arr:
+                return f"{ind}{name} = []\n"
+            return f"{ind}{name} = [{', '.join(arr)}]\n"
     else:
         return format_hcl_value(name, val, indent)
 
@@ -190,9 +217,11 @@ def dict_to_hcl_block(name, val, indent=0):
 def dict_to_resource_hcl(d):
     """
     使われている変数(var.xxx)を自動検出してvariable定義を出力し、
-    その後resourceを出力する
+    その後resourceを出力する。
+    - 空値/Noneの属性は一切出さない。
+    - 空リストは [] のみ出力。
     """
-    # --- 1. 変数検出用 ---
+    # --- 1. 変数検出 ---
     used_vars = set()
     def collect_vars(val):
         if isinstance(val, dict):
@@ -202,7 +231,6 @@ def dict_to_resource_hcl(d):
             for v in val:
                 collect_vars(v)
         elif isinstance(val, str):
-            # var.形式 or ${var.xxx}形式を検出
             for m in re.finditer(r"\$\{var\.([a-zA-Z0-9_]+)\}|var\.([a-zA-Z0-9_]+)", val):
                 used_vars.add(m.group(1) or m.group(2))
 
@@ -223,13 +251,17 @@ def dict_to_resource_hcl(d):
 
             keys = list(content.keys())
             maxlen = max((len(k) for k in keys), default=0)
+            # 値型/list型で出すやつ
             for k in keys:
                 v = content[k]
                 eqpad = ' ' * (maxlen - len(k))
                 # dict, list of dictはblock反復であとから
                 if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
                     continue
-                hcl += format_hcl_value(k, v, 1, eqpad)
+                out = format_hcl_value(k, v, 1, eqpad)
+                if out:  # ★ 空/None/空リストなら出さない
+                    hcl += out
+            # block型（dict, list of dictのみ）
             for k in keys:
                 v = content[k]
                 if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
