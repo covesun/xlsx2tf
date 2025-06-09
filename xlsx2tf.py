@@ -101,16 +101,17 @@ def set_nested_dict_from_concat_key(data, keys, value):
 # ===== format_hcl_value =====
 def format_hcl_value(name, val, indent, eqpad="", is_map=False):
     """
-    HCLの値をインデント付きのHCL文形式に整形して返す。
-    - 文字列、数値、bool、null、式（${...}）、list などに対応
-    - eqpadで「=」の位置を揃える
+    HCL値のフォーマット（式・文字列・bool等全部対応）。
+    - ${...}パターンや {$...} も素で出す（""なし）
+    - それ以外は自動でクオート
     """
     ind = '  ' * indent
     eqpad = eqpad or ''
     if isinstance(val, str):
-        m = re.fullmatch(r"\$\{([^}]+)\}", val)
+        # ${...}もしくは{$...}両方対応
+        m = re.fullmatch(r"(\$\{|\{\$)([^}]+)\}", val)
         if m:
-            expr = m.group(1)
+            expr = m.group(2)
             return f"{ind}{name}{eqpad} = {expr}\n"
         else:
             return f"{ind}{name}{eqpad} = \"{val}\"\n"
@@ -119,8 +120,17 @@ def format_hcl_value(name, val, indent, eqpad="", is_map=False):
     elif val is None:
         return f"{ind}{name}{eqpad} = null\n"
     elif isinstance(val, list):
-        arr = ', '.join([f"\"{x}\"" if isinstance(x, str) else str(x) for x in val])
-        return f"{ind}{name}{eqpad} = [{arr}]\n"
+        arr = []
+        for x in val:
+            if isinstance(x, str):
+                m = re.fullmatch(r"(\$\{|\{\$)([^}]+)\}", x)
+                if m:
+                    arr.append(m.group(2))
+                else:
+                    arr.append(f"\"{x}\"")
+            else:
+                arr.append(str(x))
+        return f"{ind}{name}{eqpad} = [{', '.join(arr)}]\n"
     else:
         return f"{ind}{name}{eqpad} = {val}\n"
 
@@ -179,33 +189,53 @@ def dict_to_hcl_block(name, val, indent=0):
 # ===== dict_to_resource_hcl =====
 def dict_to_resource_hcl(d):
     """
-    リソースタイプ・リソース名でHCLを生成。
-    - 直下の属性はdict/map/listを問わず全keyでeqpad計算してパディングする
+    使われている変数(var.xxx)を自動検出してvariable定義を出力し、
+    その後resourceを出力する
     """
+    # --- 1. 変数検出用 ---
+    used_vars = set()
+    def collect_vars(val):
+        if isinstance(val, dict):
+            for v in val.values():
+                collect_vars(v)
+        elif isinstance(val, list):
+            for v in val:
+                collect_vars(v)
+        elif isinstance(val, str):
+            # var.形式 or ${var.xxx}形式を検出
+            for m in re.finditer(r"\$\{var\.([a-zA-Z0-9_]+)\}|var\.([a-zA-Z0-9_]+)", val):
+                used_vars.add(m.group(1) or m.group(2))
+
+    # resource定義に使われている全変数を検出
+    for res_type, res_objs in d.items():
+        for res_name, content in res_objs.items():
+            collect_vars(content)
+
+    # --- 2. variable出力 ---
     hcl = ""
+    for var in sorted(used_vars):
+        hcl += f'variable "{var}" {{\n  default = "undefined"\n}}\n\n'
+
+    # --- 3. resource出力 ---
     for res_type, res_objs in d.items():
         for res_name, content in res_objs.items():
             hcl += f'resource "{res_type}" "{res_name}" {{\n'
 
-            # === resource直下keyのmaxlenを一回求めておく ===
             keys = list(content.keys())
             maxlen = max((len(k) for k in keys), default=0)
-            # === key/valueを順次出力（block以外はすべてここ）===
             for k in keys:
                 v = content[k]
                 eqpad = ' ' * (maxlen - len(k))
-                # dict, list of dictはblock反復であとから処理
+                # dict, list of dictはblock反復であとから
                 if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
                     continue
                 hcl += format_hcl_value(k, v, 1, eqpad)
-            # === block（dict, list of dictのみ）を出力 ===
             for k in keys:
                 v = content[k]
                 if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
                     hcl += dict_to_hcl_block(k, v, 1)
             hcl += '}\n\n'
     return hcl
-
 
 # ===== find_header_row =====
 def find_header_row(ws, concat_key_header="連結キー", value_header="設定値"):
