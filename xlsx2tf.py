@@ -342,7 +342,7 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
                                  tfvars_col_header="tfvars設定値"):
     """
     Excelパラシートから、各シートごとにmain.tf（HCL）、tfvars、variables.tfを個別出力する。
-    - tfvarsはvar.xxx の xxxのみをキーにして出力
+    - tfvarsはvar名のみ抽出、シートごとに1ファイル。=の位置もそろえる
     """
     wb = openpyxl.load_workbook(input_excel, data_only=True)
     os.makedirs(output_dir, exist_ok=True)
@@ -380,15 +380,13 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
                     varname = m.group(1)
                     tfvars_data[varname] = tfvars_val
 
-        # HCL（main.tf）出力 ＆ variables.tf
+        # main.tf, variables.tf
         if tf_data:
             for resource_type, res_objs in tf_data.items():
                 tf_file = os.path.join(output_dir, f"{resource_type}.tf")
                 hcl = dict_to_resource_hcl({resource_type: res_objs})
                 with open(tf_file, "w", encoding="utf-8") as f:
                     f.write(hcl)
-
-                # variables.tf出力
                 used_vars = set()
                 for content in res_objs.values():
                     used_vars |= extract_vars_from_dict(content)
@@ -398,16 +396,18 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
                         for var in sorted(used_vars):
                             vf.write(f'variable "{var}" {{\n  default = "undefined"\n}}\n\n')
 
-        # tfvars出力（キーはvar名のみ）
+        # tfvars出力（=位置パディング。シートごとに1ファイルでOK）
         if tfvars_data:
             for resource_type in set(k.split(".")[0] for k in tf_data.keys()):
                 tfvars_file = os.path.join(output_dir, f"{resource_type}.tfvars")
+                tfvars_keys = list(tfvars_data.keys())
+                maxlen = max(len(k) for k in tfvars_keys)
                 with open(tfvars_file, "w", encoding="utf-8") as f:
-                    for var, val in tfvars_data.items():
-                        f.write(f'{var} = "{val}"\n')
-
+                    for k in tfvars_keys:
+                        eqpad = " " * (maxlen - len(k))
+                        v = tfvars_data[k]
+                        f.write(f"{k}{eqpad} = \"{v}\"\n")
     print(f"出力完了：{output_dir}/*.tf, *.tfvars, *.variables.tf")
-
 
 # ===== usage =====
 def usage():
