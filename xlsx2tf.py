@@ -342,24 +342,18 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
                                  tfvars_col_header="tfvars設定値"):
     """
     Excelパラシートから、各シートごとにmain.tf（HCL）、tfvars、variables.tfを個別出力する。
-    - 連結キーは「resource_type.resource_name.属性...」形式必須
-    - 各行からresource_type, res_name, 属性キーを自動で分割取得
-    - tf_col_header, tfvars_col_headerで値列も柔軟に指定
-    - variables.tfは main.tf 内で参照されている var.xxx のみ default="undefined" で自動生成
+    - tfvarsはvar.xxx の xxxのみをキーにして出力
     """
     wb = openpyxl.load_workbook(input_excel, data_only=True)
     os.makedirs(output_dir, exist_ok=True)
     for ws in wb.worksheets:
-        # ヘッダ行自動特定
         res = find_header_row(ws, concat_key_header, tf_col_header, tfvars_col_header)
         if not res:
             print(f"シート「{ws.title}」で列が見つからずスキップ。")
             continue
         header_row_idx, concat_idx, tf_idx, tfvars_idx = res
 
-        # main.tf用: {resource_type: {res_name: 属性dict}}
         tf_data = {}
-        # tfvars用: {key: value}
         tfvars_data = {}
 
         for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
@@ -379,9 +373,12 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
                 tf_data.setdefault(resource_type, {})
                 tf_data[resource_type].setdefault(res_name, {})
                 set_nested_dict_from_concat_key(tf_data[resource_type][res_name], attr_path, tf_val)
-            # tfvars用
-            if tfvars_val not in (None, ""):
-                tfvars_data[".".join(parts)] = tfvars_val
+            # tfvars用（var名のみ抽出）
+            if tfvars_val not in (None, "") and tf_val and isinstance(tf_val, str):
+                m = re.search(r"\{\$var\.([a-zA-Z0-9_]+)\}", tf_val)
+                if m:
+                    varname = m.group(1)
+                    tfvars_data[varname] = tfvars_val
 
         # HCL（main.tf）出力 ＆ variables.tf
         if tf_data:
@@ -401,16 +398,16 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
                         for var in sorted(used_vars):
                             vf.write(f'variable "{var}" {{\n  default = "undefined"\n}}\n\n')
 
-        # tfvars出力
+        # tfvars出力（キーはvar名のみ）
         if tfvars_data:
-            for resource_type in set(k.split(".")[0] for k in tfvars_data.keys()):
+            for resource_type in set(k.split(".")[0] for k in tf_data.keys()):
                 tfvars_file = os.path.join(output_dir, f"{resource_type}.tfvars")
                 with open(tfvars_file, "w", encoding="utf-8") as f:
-                    for k, v in tfvars_data.items():
-                        if k.startswith(resource_type + "."):
-                            f.write(f'{k} = "{v}"\n')
+                    for var, val in tfvars_data.items():
+                        f.write(f'{var} = "{val}"\n')
 
     print(f"出力完了：{output_dir}/*.tf, *.tfvars, *.variables.tf")
+
 
 # ===== usage =====
 def usage():
