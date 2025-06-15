@@ -275,12 +275,15 @@ def export_excel_to_hcl(input_excel, output_hcl,
             tf_data[resource_type].setdefault(res_name, {})
             set_nested_dict_from_concat_key(tf_data[resource_type][res_name], attr_path, tf_val)
     hcl = dict_to_resource_hcl(tf_data)
+    dirpath = os.path.dirname(output_hcl)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
     with open(output_hcl, "w", encoding="utf-8") as f:
         f.write(hcl)
     print(f"HCL出力完了：{output_hcl}")
 
-# ===== reflect_tf_to_excel =====
-def reflect_tf_to_excel(tf_path, input_excel, output_excel):
+# ===== import_tf_to_excel =====
+def import_tf_to_excel(tf_path, input_excel, output_excel):
     """
     Terraform HCLファイルの値を、Excel（全シート）の対応行に反映し、保存する。
     - 連結キー突合。値のみ上書き
@@ -313,6 +316,43 @@ def reflect_tf_to_excel(tf_path, input_excel, output_excel):
     wb.save(output_excel)
     print(f"Excel反映完了：{output_excel}")
 
+def import_tfvars_to_excel(tfvars_path, input_excel, output_excel, tfvars_col_header="tfvars設定値"):
+    """
+    tfvarsファイルの値を、Excel（全シート）の対応行に反映し、保存する。
+    - tfvars（var名）突合。tfvars設定値列のみ上書き
+    """
+    # tfvarsを辞書に取り込む
+    tfvars_data = {}
+    with open(tfvars_path, "r", encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"([a-zA-Z0-9_]+)\s*=\s*\"(.*)\"", line.strip())
+            if m:
+                k, v = m.group(1), m.group(2)
+                tfvars_data[k] = v
+    wb = openpyxl.load_workbook(input_excel)
+    for ws in wb.worksheets:
+        # tfvars設定値の列を探す
+        found = False
+        for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+            for idx, val in enumerate(row):
+                if val == tfvars_col_header:
+                    col_idx = idx
+                    found = True
+                    break
+        if not found:
+            continue
+        for row in ws.iter_rows(min_row=2):
+            # tf設定値列から var名を抽出
+            tf_val = row[col_idx-1].value  # tf設定値の列はtfvars設定値の直前列想定
+            if tf_val and isinstance(tf_val, str):
+                m = re.search(r"\{\$var\.([a-zA-Z0-9_]+)\}", tf_val)
+                if m:
+                    varname = m.group(1)
+                    if varname in tfvars_data:
+                        row[col_idx].value = tfvars_data[varname]
+    wb.save(output_excel)
+    print(f"Excel反映完了：{output_excel}")
+
 def extract_vars_from_dict(d):
     """
     ネストdictから ${var.xxx} または var.xxx を全て検出してセットで返す
@@ -335,14 +375,64 @@ def extract_vars_from_dict(d):
     scan(d)
     return vars_found
 
-# ===== export_excel_to_tf_and_tfvars =====
-def export_excel_to_tf_and_tfvars(input_excel, output_dir,
-                                 concat_key_header="連結キー",
-                                 tf_col_header="tf設定値",
-                                 tfvars_col_header="tfvars設定値"):
+def export_excel_to_tf(input_excel, output_dir,
+                      concat_key_header="連結キー",
+                      tf_col_header="tf設定値"):
     """
-    Excelパラシートから、各シートごとにmain.tf（HCL）、tfvars、variables.tfを個別出力する。
-    - tfvarsはvar名のみ抽出、シートごとに1ファイル。=の位置もそろえる
+    Excelパラシートから、各シートごとにmain.tf（HCL）、variables.tfを個別出力する（tfのみ）。
+    """
+    wb = openpyxl.load_workbook(input_excel, data_only=True)
+    os.makedirs(output_dir, exist_ok=True)
+    for ws in wb.worksheets:
+        res = find_header_row(ws, concat_key_header, tf_col_header)
+        if not res:
+            print(f"シート「{ws.title}」で列が見つからずスキップ。")
+            continue
+        header_row_idx, concat_idx, tf_idx = res
+
+        tf_data = {}
+        for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
+            concat_key = row[concat_idx]
+            tf_val = row[tf_idx]
+            if not concat_key or tf_val in (None, ""):
+                continue
+            parts = concat_key.split(".")
+            if len(parts) < 3:
+                print(f"連結キー不正: {concat_key}（スキップ）")
+                continue
+            resource_type, res_name = parts[0], parts[1]
+            attr_path = parts[2:]
+            tf_data.setdefault(resource_type, {})
+            tf_data[resource_type].setdefault(res_name, {})
+            set_nested_dict_from_concat_key(tf_data[resource_type][res_name], attr_path, tf_val)
+
+        # main.tf, variables.tf 出力
+        if tf_data:
+            for resource_type, res_objs in tf_data.items():
+                tf_file = os.path.join(output_dir, f"{resource_type}.tf")
+                hcl = dict_to_resource_hcl({resource_type: res_objs})
+                with open(tf_file, "w", encoding="utf-8") as f:
+                    f.write(hcl)
+                # variables.tf 出力
+                used_vars = set()
+                for content in res_objs.values():
+                    used_vars |= extract_vars_from_dict(content)
+                if used_vars:
+                    vars_file = os.path.join(output_dir, f"{resource_type}.variables.tf")
+                    with open(vars_file, "w", encoding="utf-8") as vf:
+                        for var in sorted(used_vars):
+                            vf.write(f'variable "{var}" {{\n  default = "undefined"\n}}\n\n')
+    print(f"出力完了：{output_dir}/*.tf, *.variables.tf")
+
+def export_excel_to_tfvars(input_excel, output_dir,
+                          concat_key_header="連結キー",
+                          tf_col_header="tf設定値",
+                          tfvars_col_header="tfvars設定値"):
+    """
+    Excelパラシートから、各シートごとにtfvarsファイル（resource_type.tfvars）を出力する。
+    - tfvarsはvar名のみ抽出、リソースタイプごとに1ファイル。=の位置もそろえる
+    - 連結キーは「resource_type.resource_name.属性...」形式必須
+    - tfvars値が空欄の場合はスキップ
     """
     wb = openpyxl.load_workbook(input_excel, data_only=True)
     os.makedirs(output_dir, exist_ok=True)
@@ -353,7 +443,6 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
             continue
         header_row_idx, concat_idx, tf_idx, tfvars_idx = res
 
-        tf_data = {}
         tfvars_data = {}
 
         for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
@@ -362,17 +451,6 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
             tfvars_val = row[tfvars_idx]
             if not concat_key:
                 continue
-            parts = concat_key.split(".")
-            if len(parts) < 3:
-                print(f"連結キー不正: {concat_key}（スキップ）")
-                continue
-            resource_type, res_name = parts[0], parts[1]
-            attr_path = parts[2:]
-            # main.tf用
-            if tf_val not in (None, ""):
-                tf_data.setdefault(resource_type, {})
-                tf_data[resource_type].setdefault(res_name, {})
-                set_nested_dict_from_concat_key(tf_data[resource_type][res_name], attr_path, tf_val)
             # tfvars用（var名のみ抽出）
             if tfvars_val not in (None, "") and tf_val and isinstance(tf_val, str):
                 m = re.search(r"\{\$var\.([a-zA-Z0-9_]+)\}", tf_val)
@@ -380,52 +458,47 @@ def export_excel_to_tf_and_tfvars(input_excel, output_dir,
                     varname = m.group(1)
                     tfvars_data[varname] = tfvars_val
 
-        # main.tf, variables.tf
-        if tf_data:
-            for resource_type, res_objs in tf_data.items():
-                tf_file = os.path.join(output_dir, f"{resource_type}.tf")
-                hcl = dict_to_resource_hcl({resource_type: res_objs})
-                with open(tf_file, "w", encoding="utf-8") as f:
-                    f.write(hcl)
-                used_vars = set()
-                for content in res_objs.values():
-                    used_vars |= extract_vars_from_dict(content)
-                if used_vars:
-                    vars_file = os.path.join(output_dir, f"{resource_type}.variables.tf")
-                    with open(vars_file, "w", encoding="utf-8") as vf:
-                        for var in sorted(used_vars):
-                            vf.write(f'variable "{var}" {{\n  default = "undefined"\n}}\n\n')
-
-        # tfvars出力（=位置パディング。シートごとに1ファイルでOK）
+        # tfvars出力（=位置パディング。リソースタイプごとに1ファイル）
         if tfvars_data:
-            for resource_type in set(k.split(".")[0] for k in tf_data.keys()):
+            # 連結キーからresource_typeを抽出
+            resource_types = set()
+            for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
+                concat_key = row[concat_idx]
+                if concat_key and "." in concat_key:
+                    resource_type = concat_key.split(".")[0]
+                    resource_types.add(resource_type)
+            for resource_type in resource_types:
                 tfvars_file = os.path.join(output_dir, f"{resource_type}.tfvars")
-                tfvars_keys = list(tfvars_data.keys())
+                tfvars_keys = [k for k in tfvars_data.keys()]
+                if not tfvars_keys:
+                    continue
                 maxlen = max(len(k) for k in tfvars_keys)
                 with open(tfvars_file, "w", encoding="utf-8") as f:
                     for k in tfvars_keys:
                         eqpad = " " * (maxlen - len(k))
                         v = tfvars_data[k]
                         f.write(f"{k}{eqpad} = \"{v}\"\n")
-    print(f"出力完了：{output_dir}/*.tf, *.tfvars, *.variables.tf")
+    print(f"出力完了：{output_dir}/*.tfvars")
 
 # ===== usage =====
 def usage():
-    """
-    使い方ヘルプを表示して終了。
-    """
-    print("python xlsx2tf.py export_hcl_to_excel <tf_path> <output_excel>")
+    print("python xlsx2tf.py export_excel_to_tf <input_excel> <output_dir> [連結キー列名] [tf設定値列名]")
+    print("python xlsx2tf.py export_excel_to_tfvars <input_excel> <output_dir> [連結キー列名] [tf設定値列名] [tfvars設定値列名]")
     print("python xlsx2tf.py export_excel_to_hcl <input_excel> <output_hcl> [連結キー列名] [tf設定値列名]")
-    print("python xlsx2tf.py reflect_tf_to_excel <tf_path> <input_excel> <output_excel>")
-    print("python xlsx2tf.py export_excel_to_tf_and_tfvars <input_excel> <output_dir> [連結キー列名] [tf設定値列名] [tfvars設定値列名]")
+    print("python xlsx2tf.py export_hcl_to_excel <tf_path> <output_excel>")
+    print("python xlsx2tf.py import_tf_to_excel <tf_path> <input_excel> <output_excel>")
+    print("python xlsx2tf.py import_tfvars_to_excel <tfvars_path> <input_excel> <output_excel> [tfvars設定値列名]")
+
     sys.exit(1)
 
 # ===== CLI =====
 funcs = {
-    "export_hcl_to_excel": export_hcl_to_excel,
+    "export_excel_to_tf": export_excel_to_tf,
+    "export_excel_to_tfvars": export_excel_to_tfvars,
     "export_excel_to_hcl": export_excel_to_hcl,
-    "reflect_tf_to_excel": reflect_tf_to_excel,
-    "export_excel_to_tf_and_tfvars": export_excel_to_tf_and_tfvars,
+    "export_hcl_to_excel": export_hcl_to_excel,
+    "import_tf_to_excel": import_tf_to_excel,
+    "import_tfvars_to_excel": import_tfvars_to_excel
 }
 
 if __name__ == "__main__":
