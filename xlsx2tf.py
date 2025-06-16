@@ -377,13 +377,22 @@ def extract_vars_from_dict(d):
 
 def export_excel_to_tf(input_excel, output_dir,
                       concat_key_header="連結キー",
-                      tf_col_header="tf設定値"):
+                      tf_col_header="tf設定値",
+                      sheet_name=None):
     """
-    Excelパラシートから、各シートごとにmain.tf（HCL）、variables.tfを個別出力する（tfのみ）。
+    Excelパラシートから、各シートごとまたは指定シートだけmain.tf（HCL）、variables.tfを出力（tfのみ）。
     """
     wb = openpyxl.load_workbook(input_excel, data_only=True)
     os.makedirs(output_dir, exist_ok=True)
-    for ws in wb.worksheets:
+
+    worksheets = wb.worksheets
+    if sheet_name:
+        worksheets = [wb[sheet_name]] if sheet_name in wb.sheetnames else []
+        if not worksheets:
+            print(f"シート「{sheet_name}」が見つからないためスキップ。")
+            return
+
+    for ws in worksheets:
         res = find_header_row(ws, concat_key_header, tf_col_header)
         if not res:
             print(f"シート「{ws.title}」で列が見つからずスキップ。")
@@ -427,16 +436,23 @@ def export_excel_to_tf(input_excel, output_dir,
 def export_excel_to_tfvars(input_excel, output_dir,
                           concat_key_header="連結キー",
                           tf_col_header="tf設定値",
-                          tfvars_col_header="tfvars設定値"):
+                          tfvars_col_header="tfvars設定値",
+                          sheet_name=None):
     """
-    Excelパラシートから、各シートごとにtfvarsファイル（resource_type.tfvars）を出力する。
+    Excelパラシートから、各シートごとまたは指定シートだけtfvarsファイル（resource_type.tfvars）を出力する。
     - tfvarsはvar名のみ抽出、リソースタイプごとに1ファイル。=の位置もそろえる
-    - 連結キーは「resource_type.resource_name.属性...」形式必須
-    - tfvars値が空欄の場合はスキップ
     """
     wb = openpyxl.load_workbook(input_excel, data_only=True)
     os.makedirs(output_dir, exist_ok=True)
-    for ws in wb.worksheets:
+
+    worksheets = wb.worksheets
+    if sheet_name:
+        worksheets = [wb[sheet_name]] if sheet_name in wb.sheetnames else []
+        if not worksheets:
+            print(f"シート「{sheet_name}」が見つからないためスキップ。")
+            return
+
+    for ws in worksheets:
         res = find_header_row(ws, concat_key_header, tf_col_header, tfvars_col_header)
         if not res:
             print(f"シート「{ws.title}」で列が見つからずスキップ。")
@@ -482,8 +498,8 @@ def export_excel_to_tfvars(input_excel, output_dir,
 
 # ===== usage =====
 def usage():
-    print("python xlsx2tf.py export_excel_to_tf <input_excel> <output_dir> [連結キー列名] [tf設定値列名]")
-    print("python xlsx2tf.py export_excel_to_tfvars <input_excel> <output_dir> [連結キー列名] [tf設定値列名] [tfvars設定値列名]")
+    print("python xlsx2tf.py export_excel_to_tf <input_excel> <output_dir> [連結キー列名] [tf設定値列名] [シート名]")
+    print("python xlsx2tf.py export_excel_to_tfvars <input_excel> <output_dir> [連結キー列名] [tf設定値列名] [tfvars設定値列名] [シート名]")
     print("python xlsx2tf.py export_excel_to_hcl <input_excel> <output_hcl> [連結キー列名] [tf設定値列名]")
     print("python xlsx2tf.py export_hcl_to_excel <tf_path> <output_excel>")
     print("python xlsx2tf.py import_tf_to_excel <tf_path> <input_excel> <output_excel>")
