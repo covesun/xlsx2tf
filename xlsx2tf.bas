@@ -494,32 +494,47 @@ Sub extract_vars_from_dict_rec(val As Variant, vars_found As Collection)
     End If
 End Sub
 
-Sub export_excel_to_tf_and_tfvars(input_excel As String, output_dir As String, _
+Sub export_excel_to_tf(input_excel As String, output_dir As String, _
     Optional concat_key_header As String = "連結キー", _
     Optional tf_col_header As String = "tf設定値", _
-    Optional tfvars_col_header As String = "tfvars設定値")
+    Optional sheet_name As String = "")
 
     Dim wb As Workbook, ws As Worksheet
     Set wb = Workbooks.Open(input_excel)
     If Dir(output_dir, vbDirectory) = "" Then MkDir output_dir
 
-    For Each ws In wb.Worksheets
+    Dim worksheets As Collection: Set worksheets = New Collection
+    If sheet_name <> "" Then
+        On Error Resume Next
+        worksheets.Add wb.Worksheets(sheet_name)
+        On Error GoTo 0
+        If worksheets.Count = 0 Then
+            MsgBox "シート '" & sheet_name & "' が見つかりません。"
+            wb.Close False
+            Exit Sub
+        End If
+    Else
+        Dim ws2 As Worksheet
+        For Each ws2 In wb.Worksheets
+            worksheets.Add ws2
+        Next
+    End If
+
+    For Each ws In worksheets
         Dim res As Variant
-        res = find_header_row(ws, Array(concat_key_header, tf_col_header, tfvars_col_header))
+        res = find_header_row(ws, Array(concat_key_header, tf_col_header))
         If IsEmpty(res) Then GoTo ContinueNextSheet
-        Dim header_row_idx As Long, concat_idx As Long, tf_idx As Long, tfvars_idx As Long
-        header_row_idx = res(0): concat_idx = res(1) + 1: tf_idx = res(2) + 1: tfvars_idx = res(3) + 1
+        Dim header_row_idx As Long, concat_idx As Long, tf_idx As Long
+        header_row_idx = res(0): concat_idx = res(1) + 1: tf_idx = res(2) + 1
 
         Dim tf_data As Object: Set tf_data = CreateObject("Scripting.Dictionary")
-        Dim tfvars_data As Object: Set tfvars_data = CreateObject("Scripting.Dictionary")
         Dim r As Range
 
         For Each r In ws.UsedRange.Rows
             If r.Row <= header_row_idx Then GoTo NextRow
-            Dim concat_key As String, tf_val As Variant, tfvars_val As Variant
+            Dim concat_key As String, tf_val As Variant
             concat_key = r.Cells(concat_idx).Value
             tf_val = r.Cells(tf_idx).Value
-            tfvars_val = r.Cells(tfvars_idx).Value
             If concat_key = "" Then GoTo NextRow
             Dim parts() As String: parts = Split(concat_key, ".")
             If UBound(parts) < 2 Then GoTo NextRow
@@ -533,20 +548,10 @@ Sub export_excel_to_tf_and_tfvars(input_excel As String, output_dir As String, _
                 If Not tf_data(resource_type).Exists(res_name) Then tf_data(resource_type).Add res_name, CreateObject("Scripting.Dictionary")
                 set_nested_dict_from_concat_key_excel tf_data(resource_type)(res_name), attr_path, tf_val
             End If
-            ' tfvars用（var名のみ抽出）
-            If tfvars_val <> "" And tf_val <> "" Then
-                Dim re As Object: Set re = CreateObject("VBScript.RegExp")
-                re.Pattern = "\{\$var\.([a-zA-Z0-9_]+)\}"
-                If re.Test(tf_val) Then
-                    Dim matches As Object: Set matches = re.Execute(tf_val)
-                    Dim varname As String: varname = matches(0).SubMatches(0)
-                    tfvars_data(varname) = tfvars_val
-                End If
-            End If
 NextRow:
         Next
 
-        ' main.tf, variables.tf, tfvars 出力
+        ' main.tf, variables.tf 出力
         Dim resource_type As Variant
         For Each resource_type In tf_data.Keys
             Dim tf_file As String: tf_file = output_dir & "\" & resource_type & ".tf"
@@ -576,25 +581,100 @@ NextRow:
                 Close #f
             End If
         Next
+ContinueNextSheet:
+    Next
+    wb.Close False
+    MsgBox "出力完了: " & output_dir & "\*.tf, *.variables.tf"
+End Sub
 
-        ' tfvars 出力（=位置パディング。シートごとに1ファイルでOK）
+Sub export_excel_to_tfvars(input_excel As String, output_dir As String, _
+    Optional concat_key_header As String = "連結キー", _
+    Optional tf_col_header As String = "tf設定値", _
+    Optional tfvars_col_header As String = "tfvars設定値", _
+    Optional sheet_name As String = "")
+
+    Dim wb As Workbook, ws As Worksheet
+    Set wb = Workbooks.Open(input_excel)
+    If Dir(output_dir, vbDirectory) = "" Then MkDir output_dir
+
+    Dim worksheets As Collection: Set worksheets = New Collection
+    If sheet_name <> "" Then
+        On Error Resume Next
+        worksheets.Add wb.Worksheets(sheet_name)
+        On Error GoTo 0
+        If worksheets.Count = 0 Then
+            MsgBox "シート '" & sheet_name & "' が見つかりません。"
+            wb.Close False
+            Exit Sub
+        End If
+    Else
+        Dim ws2 As Worksheet
+        For Each ws2 In wb.Worksheets
+            worksheets.Add ws2
+        Next
+    End If
+
+    For Each ws In worksheets
+        Dim res As Variant
+        res = find_header_row(ws, Array(concat_key_header, tf_col_header, tfvars_col_header))
+        If IsEmpty(res) Then GoTo ContinueNextSheet
+        Dim header_row_idx As Long, concat_idx As Long, tf_idx As Long, tfvars_idx As Long
+        header_row_idx = res(0): concat_idx = res(1) + 1: tf_idx = res(2) + 1: tfvars_idx = res(3) + 1
+
+        Dim tfvars_data As Object: Set tfvars_data = CreateObject("Scripting.Dictionary")
+        Dim r As Range
+
+        For Each r In ws.UsedRange.Rows
+            If r.Row <= header_row_idx Then GoTo NextRow
+            Dim concat_key As String, tf_val As Variant, tfvars_val As Variant
+            concat_key = r.Cells(concat_idx).Value
+            tf_val = r.Cells(tf_idx).Value
+            tfvars_val = r.Cells(tfvars_idx).Value
+            If concat_key = "" Then GoTo NextRow
+            ' tfvars用（var名のみ抽出）
+            If tfvars_val <> "" And tf_val <> "" Then
+                Dim re As Object: Set re = CreateObject("VBScript.RegExp")
+                re.Pattern = "\{\$var\.([a-zA-Z0-9_]+)\}"
+                If re.Test(tf_val) Then
+                    Dim matches As Object: Set matches = re.Execute(tf_val)
+                    Dim varname As String: varname = matches(0).SubMatches(0)
+                    tfvars_data(varname) = tfvars_val
+                End If
+            End If
+NextRow:
+        Next
+
+        ' tfvars出力（=位置パディング。リソースタイプごとに1ファイル）
         If tfvars_data.Count > 0 Then
             Dim tfvars_keys As Variant: tfvars_keys = tfvars_data.Keys
             Dim maxlen As Integer: maxlen = 0
             For Each v In tfvars_keys
                 If Len(v) > maxlen Then maxlen = Len(v)
             Next
-            Dim tfvars_file As String: tfvars_file = output_dir & "\" & ws.Name & ".tfvars"
-            f = FreeFile
-            Open tfvars_file For Output As #f
-            For Each v In tfvars_keys
-                Dim eqpad As String: eqpad = String(maxlen - Len(v), " ")
-                Print #f, v & eqpad & " = """ & tfvars_data(v) & """"
+            ' 連結キーからresource_typeを抽出（1つ目のみ）
+            Dim resource_type As String
+            For Each r In ws.UsedRange.Rows
+                Dim concat_key As String
+                concat_key = r.Cells(concat_idx).Value
+                If concat_key <> "" And InStr(concat_key, ".") > 0 Then
+                    resource_type = Split(concat_key, ".")(0)
+                    Exit For
+                End If
             Next
-            Close #f
+            If resource_type <> "" Then
+                Dim tfvars_file As String: tfvars_file = output_dir & "\" & resource_type & ".tfvars"
+                Dim f As Integer: f = FreeFile
+                Open tfvars_file For Output As #f
+                For Each v In tfvars_keys
+                    Dim eqpad As String: eqpad = String(maxlen - Len(v), " ")
+                    Print #f, v & eqpad & " = """ & tfvars_data(v) & """"
+                Next
+                Close #f
+            End If
         End If
 ContinueNextSheet:
     Next
     wb.Close False
-    MsgBox "出力完了: " & output_dir & "\*.tf, *.tfvars, *.variables.tf"
+    MsgBox "出力完了: " & output_dir & "\*.tfvars"
 End Sub
+
