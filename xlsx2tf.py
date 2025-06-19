@@ -208,7 +208,7 @@ def export_hcl_to_excel(tf_path, output_excel):
     - resource_type/res_name/parent_key/child_key/値/連結キー の形式で書き出し
     """
     import hcl2
-    with Path(tf_path).open("r") as tf_file:
+    with Path(tf_path).open("r", encoding="utf-8") as tf_file:
         parsed = hcl2.load(tf_file)
     terraform_data = {}
     for block in parsed.get("resource", []):
@@ -289,7 +289,7 @@ def import_tf_to_excel(tf_path, input_excel, output_excel):
     - 連結キー突合。値のみ上書き
     """
     import hcl2
-    with Path(tf_path).open("r") as tf_file:
+    with Path(tf_path).open("r", encoding="utf-8") as tf_file:
         parsed = hcl2.load(tf_file)
     terraform_data = {}
     for block in parsed.get("resource", []):
