@@ -62,6 +62,8 @@ def format_hcl_value(name, val, indent, eqpad="", is_map=False):
     """
     ind = '  ' * indent
     eqpad = eqpad or ''
+    if is_map and not re.fullmatch(r"[0-9A-Za-z_-]+", name):
+        name = f'"{name}"'
     if val is None or val == "" or (isinstance(val, list) and len(val) == 0):
         return ""
     if isinstance(val, str):
