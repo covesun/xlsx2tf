@@ -5,19 +5,24 @@ import openpyxl
 from pathlib import Path
 
 # ===== flatten_split_keys =====
-def flatten_split_keys(value, parent_key=""):
+def flatten_split_keys(value, parent_key="", join_list=False):
     """
     任意のネストdict/listを 'foo.bar[0].baz' のような連結キー:値 のdictに展開する。
+    join_list=True の場合、最終要素がプリミティブの list は1つのキーに
+    ", " 区切りの文字列としてまとめる。
     """
     items = {}
     if isinstance(value, dict):
         for k, v in value.items():
             new_key = f"{parent_key}.{k}" if parent_key else k
-            items.update(flatten_split_keys(v, new_key))
+            items.update(flatten_split_keys(v, new_key, join_list))
     elif isinstance(value, list):
-        for i, elem in enumerate(value):
-            new_key = f"{parent_key}[{i}]" if parent_key else f"[{i}]"
-            items.update(flatten_split_keys(elem, new_key))
+        if join_list and all(not isinstance(elem, (dict, list)) for elem in value):
+            items[parent_key] = ", ".join(str(elem) for elem in value)
+        else:
+            for i, elem in enumerate(value):
+                new_key = f"{parent_key}[{i}]" if parent_key else f"[{i}]"
+                items.update(flatten_split_keys(elem, new_key, join_list))
     else:
         items[parent_key] = value
     return items
@@ -214,7 +219,7 @@ def export_hcl_to_excel(tf_path, output_excel):
     for block in parsed.get("resource", []):
         for resource_type, resource_instances in block.items():
             for res_name, res_body in resource_instances.items():
-                flat_attrs = flatten_split_keys(res_body)
+                flat_attrs = flatten_split_keys(res_body, join_list=True)
                 for full_key, val in flat_attrs.items():
                     if "." in full_key:
                         parent_key, child_key = full_key.rsplit(".", 1)
