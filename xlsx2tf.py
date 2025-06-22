@@ -104,14 +104,14 @@ def format_hcl_value(name, val, indent, eqpad="", is_map=False):
         return f"{ind}{name}{eqpad} = {val}\n"
 
 # ===== dict_to_hcl_block =====
-def dict_to_hcl_block(name, val, indent=0):
+def dict_to_hcl_block(name, val, indent=0, force_block=False):
     """
     ネストdict/listをHCLブロックとして再帰的に出力。
     - 空値/None属性は出力しない。
     """
     ind = '  ' * indent
     if isinstance(val, dict):
-        if all(not isinstance(v, (dict, list)) for v in val.values()):
+        if not force_block and all(not isinstance(v, (dict, list)) for v in val.values()):
             keys = list(val.keys())
             maxlen = max(len(k) for k in keys) if keys else 0
             hcl = f"{ind}{name} = {{\n"
@@ -138,7 +138,7 @@ def dict_to_hcl_block(name, val, indent=0):
             if out:
                 hcl += out
         for k, v in blocks:
-            hcl += dict_to_hcl_block(k, v, indent+1)
+            hcl += dict_to_hcl_block(k, v, indent+1, True)
         hcl += f"{ind}}}\n"
         return hcl
     elif isinstance(val, list):
@@ -146,7 +146,7 @@ def dict_to_hcl_block(name, val, indent=0):
         if all(isinstance(i, dict) for i in val):
             blocks = ""
             for v in val:
-                blocks += dict_to_hcl_block(name, v, indent)
+                blocks += dict_to_hcl_block(name, v, indent, True)
             return blocks
         # list of primitive: 空リストは [] のみ
         elif len(val) == 0:
